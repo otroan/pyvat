@@ -12,16 +12,160 @@ import sys
 import os
 import struct
 import logging
+import collections
+import traceback
+import warnings
 
 try:
-    from vpp_papi import VPPApiClient
+    import vpp_papi
 except ImportError:
     # Perhaps we are in the source directory
     sys.path.append('src/vpp-api/python')
-    from vpp_papi import VPPApiClient
+    import vpp_papi
+
+# generated with awk -F '[(,)]' 'BEGIN{print "VPP_API_ERRNO = {"}/^_/{printf "    %i: %s,\n", $3, $4}END{print "}"}' src/vnet/api_errno.h
+VPP_API_ERRNO = {
+    -1:  "Unspecified Error",
+    -2:  "Invalid sw_if_index",
+    -3:  "No such FIB / VRF",
+    -4:  "No such inner FIB / VRF",
+    -5:  "No such label",
+    -6:  "No such entry",
+    -7:  "Invalid value",
+    -8:  "Invalid value #2",
+    -9:  "Unimplemented",
+    -10:  "Invalid sw_if_index #2",
+    -11:  "System call error #1",
+    -12:  "System call error #2",
+    -13:  "System call error #3",
+    -14:  "System call error #4",
+    -15:  "System call error #5",
+    -16:  "System call error #6",
+    -17:  "System call error #7",
+    -18:  "System call error #8",
+    -19:  "System call error #9",
+    -20:  "System call error #10",
+    -30:  "Feature disabled by configuration",
+    -31:  "Invalid registration",
+    -50:  "Next hop not in FIB",
+    -51:  "Unknown destination",
+    -52:  "No paths specified in route",
+    -53:  "Next hop not found",
+    -54:  "No matching interface for probe",
+    -55:  "Invalid VLAN",
+    -56:  "VLAN subif already exists",
+    -57:  "Invalid src address",
+    -58:  "Invalid dst address",
+    -59:  "Address length mismatch",
+    -60:  "Address not found for interface",
+    -61:  "Address not deletable",
+    -62:  "ip6 not enabled",
+    -63:  "No such graph node",
+    -64:  "No such graph node #2",
+    -65:  "No such table",
+    -66:  "No such table #2",
+    -67:  "No such table #3",
+    -68:  "Subinterface already exists",
+    -69:  "Subinterface creation failed",
+    -70:  "Invalid memory size requested",
+    -71:  "Invalid interface",
+    -72:  "Invalid number of tags for requested operation",
+    -73:  "Invalid argument",
+    -74:  "Unexpected interface state",
+    -75:  "Tunnel already exists",
+    -76:  "Invalid decap-next",
+    -77:  "Response not ready",
+    -78:  "Not connected to the data plane",
+    -79:  "Interface already exists",
+    -80:  "Operation not allowed on slave of BondEthernet",
+    -81:  "Value already exists",
+    -82:  "Source and destination are the same",
+    -83:  "IP6 multicast address required",
+    -84:  "Segment routing policy name required",
+    -85:  "Not running as root",
+    -86:  "Connection to the data plane already exists",
+    -87:  "Unsupported JNI version",
+    -88:  "IP prefix invalid",
+    -89:  "Invalid worker thread",
+    -90:  "LISP is disabled",
+    -91:  "Classify table not found",
+    -92:  "Unsupported LISP EID type",
+    -93:  "Cannot create pcap file",
+    -94:  "Invalid adjacency type for this operation",
+    -95:  "Operation would exceed configured capacity of ranges",
+    -96:  "Operation would exceed capacity of number of ports",
+    -97:  "Invalid address family",
+    -98:  "Invalid sub-interface sw_if_index",
+    -99:  "Table too big",
+    -100:  "Cannot enable/disable feature",
+    -101:  "Duplicate BFD object",
+    -102:  "No such BFD object",
+    -103:  "BFD object in use",
+    -104:  "BFD feature not supported",
+    -105:  "Address in use",
+    -106:  "Address not in use",
+    -107:  "Queue full",
+    -108:  "Unsupported application config",
+    -109:  "URI FIFO segment create failed",
+    -110:  "RLOC address is local",
+    -111:  "BFD object cannot be manipulated at this time",
+    -112:  "Invalid GPE mode",
+    -113:  "LISP GPE entries are present",
+    -114:  "Address found for interface",
+    -115:  "Session failed to connect",
+    -116:  "Entry already exists",
+    -117:  "Svm segment create fail",
+    -118:  "Application not attached",
+    -119:  "Bridge domain already exists",
+    -120:  "Bridge domain has member interfaces",
+    -121:  "Bridge domain 0 can't be deleted/modified",
+    -122:  "Bridge domain ID exceeds 16M limit",
+    -123:  "Subinterface doesn't exist",
+    -124:  "Client already exist for L2 MACs events",
+    -125:  "Invalid queue",
+    -126:  "Unsupported",
+    -127:  "Address already present on another interface",
+    -128:  "Invalid application namespace",
+    -129:  "Wrong app namespace secret",
+    -130:  "Connect scope",
+    -131:  "App already attached",
+    -132:  "Redirect failed",
+    -133:  "Illegal name",
+    -134:  "No name servers configured",
+    -135:  "Name server not found",
+    -136:  "Name resolution not enabled",
+    -137:  "Server format error",
+    -138:  "No such name",
+    -139:  "No addresses available",
+    -140:  "Retry with new server",
+    -141:  "Connect was filtered",
+    -142:  "Inbound ACL in use",
+    -143:  "Outbound ACL in use",
+    -144:  "Initialization Failed",
+    -145:  "Netlink error",
+    -146:  "BIER bit-string-length unsupported",
+    -147:  "Instance in use",
+    -148:  "Session ID out of range",
+    -149:  "ACL in use by a lookup context",
+    -150:  "Invalid value #3",
+    -151:  "Interface is not an Ethernet interface",
+    -152:  "Bridge domain already has a BVI interface",
+    -153:  "Invalid Protocol",
+    -154:  "Invalid Algorithm",
+    -155:  "Resource In Use",
+    -156:  "invalid Key Length",
+    -157:  "Unsupported FIB Path protocol",
+    -159:  "Endian mismatch detected",
+    -160:  "No change in table",
+    -161:  "Missing certifcate or key",
+    -162:  "limit exceeded",
+    -163:  "port not managed by IKE",
+    -164:  "UDP port already taken",
+    -165:  "Retry stream call with cursor",
+    -166:  "Invalid value #4",
+}
 
 interfaces = {}
-
 
 def startup_init(vpp):
     # Create initial interface to ifindex mapping
@@ -175,6 +319,43 @@ class VATShell(cmd.Cmd):
         cmd.Cmd.__init__(self)
         self.commands = sorted(vpp.services.keys())
         self.pp = VATPrettyPrinter(indent=2)
+        self.commands = collections.OrderedDict()
+        adds = frozenset(('add', 'is_add',
+                          # bier
+                          'bde_is_add', 'br_is_add', 'bdt_is_add', 'bt_is_add',
+                          # mpls
+                          'mt_is_add', 'mr_is_add'))
+        dels = frozenset(('is_del',
+                          # ioam
+                          'dis'))
+        empty = dict()
+        for svc in sorted(vpp.services.keys()):
+            cli = svc.replace('_', ' ')
+            # remove the 'sw' prefix from sw_interface* APIs
+            cli = cli.replace('sw ', '')
+            cli = cli.replace('af packet ', 'afpacket ')
+            cli = cli.replace('af xdp ', 'afxdp ')
+            # FIXME: we might need the same for 'set' APIs?
+            # add/del commands for add_del APIs
+            if ' add del' in cli:
+                cli_ = cli.replace(' add del', '')
+                fields = frozenset(vpp.messages[svc].fields)
+                add_ = adds & fields
+                del_ = dels & fields
+                assert(not (add_ and del_))
+                if add_:
+                    add_, = add_
+                    self.commands[cli_ + ' add'] = (svc, {add_: 1})
+                    self.commands[cli_ + ' del'] = (svc, {add_: 0})
+                    continue
+                elif del_:
+                    del_, = del_
+                    self.commands[cli_ + ' add'] = (svc, {del_: 0})
+                    self.commands[cli_ + ' del'] = (svc, {del_: 1})
+                    continue
+                else:
+                    print("Can't find is_add/is_del parameter for %s" % svc)
+            self.commands[cli] = (svc, empty)
 
     def do_exit(self, s):
         'Exit the VAT shell'
@@ -199,17 +380,25 @@ class VATShell(cmd.Cmd):
     def emptyline(self):
         pass
 
+    def __parse_args(self, line):
+        words = shlex.split(line)
+        none = (None, None)
+        for i in range(len(words), 0, -1):
+            svc, defaults = self.commands.get(' '.join(words[:i]), none)
+            if svc: break
+        return (svc, defaults, words[i:])
+
     def default(self, line):
-        args = shlex.split(line)
+        svc, defaults, args = self.__parse_args(line)
 
         try:
-            f = getattr(vpp.api, args[0])
+            f = getattr(vpp.api, svc)
         except AttributeError:
             print('command not found {}'.format(line))
             return
 
         try:
-            a = mapargs(args[0], args[1:])
+            a = mapargs(svc, args)
         except struct.error as err:
             print('invalid arguments {} {}'.format(line, err))
             return
@@ -217,26 +406,34 @@ class VATShell(cmd.Cmd):
             print('No such interface {}'.format(err))
             return
 
-        #try:
+        a.update(defaults)
         rv = f(**a)
-        self.pp.pprint(rv)
-        #except struct.error as err:
-        #    print('Error: {}'.format( err))
+        # streaming response is a list
+        if not isinstance(rv, list):
+            if rv.retval == 0:
+                print('Success')
+            else:
+                print('Failure: ' + VPP_API_ERRNO[rv.retval])
+        else:
+            self.pp.pprint(rv)
 
 
     # if last word is a valid field, show completion for that field
-    def completedefault(self, text, line, begidx, endidx):
-        args = line.split()
+    def __completedefault(self, text, line, begidx, endidx):
+        commands = self.completenames(line[:endidx], line, 0, endidx)
+        if commands:
+            return [c[begidx:] for c in commands]
 
-        fields = vpp.messages[args[0]].fields[3:]  # Skip header fields
-        fieldtypes = vpp.messages[args[0]].fieldtypes[3:]
+        svc, defaults, args = self.__parse_args(line)
+        if not svc:
+            return
+
+        # creating a dict mapping fields names with fields type
+        # we are skipping the 3 header fields
+        fields = collections.OrderedDict(zip(vpp.messages[svc].fields[3:], vpp.messages[svc].fieldtypes[3:]))
+        #lastarg = None if not args else args[-1]
         lastarg = None
-        if len(args) >= 2:
-            if args[-1] in fields:
-                lastarg = args[-1]
-            elif args[-2] in fields:
-                lastarg = args[-2]
-        if lastarg:
+        if lastarg in fields:
             i = fields.index(lastarg)
             t = fieldtypes[i]
             if t == 'u32':
@@ -251,13 +448,24 @@ class VATShell(cmd.Cmd):
                             if intf.startswith(text)]
                 return list(interfaces)
         else:
-            return [param for param in fields if param.startswith(text)]
+            params = [param for param in fields if param.startswith(text) and param not in defaults]
+            if len(params) == 1:
+                t = vpp.get_type(fields[params[0]])
+                if isinstance(t, vpp_papi.vpp_serializer.VPPType) and len(t.msgdef) > 1:
+                    return [params[0] + " " + f[1] for f in t.msgdef]
+            return params
         return []
 
+    def completedefault(self, *args, **kwargs):
+        try:
+            return self.__completedefault(*args, **kwargs)
+        except:
+            print()
+            traceback.print_exc()
+            raise
+
     def completenames(self, text, line, begidx, endidx):
-        if text:
-            return [command for command in self.commands
-                    if command.startswith(text)]
+        return [c for c in self.commands if c.startswith(text)]
 
     def do_help(self, arg):
         if not arg:
@@ -271,9 +479,9 @@ class VATShell(cmd.Cmd):
         super(VATShell, self).do_help(arg)
 
 
-def socket_connect(socket_name, apifiles):
-    #vpp = VPPApiClient(server_address=socket_name, apifiles=apifiles)
-    vpp = VPPApiClient(apifiles=apifiles)
+def socket_connect(socket_name, apidir):
+    vpp_papi.VPPApiClient.apidir = apidir
+    vpp = vpp_papi.VPPApiClient(server_address=socket_name)
     try:
         vpp.connect(name='vat')
     except Exception:
@@ -295,15 +503,7 @@ if __name__ == '__main__':
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
 
-    if args.apidir:
-        apifiles = []
-        for root, dirs, files in os.walk(args.apidir):
-            for name in files:
-                apifiles.append(os.path.join(root, name))
-    else:
-        apifiles = None
-
-    vpp = socket_connect(args.socket_name, apifiles)
+    vpp = socket_connect(args.socket_name, args.apidir)
 
     if args.commands:
         VATShell().onecmd(args.commands[0])
