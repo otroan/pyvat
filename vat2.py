@@ -23,6 +23,9 @@ except ImportError:
     sys.path.append('src/vpp-api/python')
     import vpp_papi
 
+OBJ_OPEN = '{'
+OBJ_CLOSE = '}'
+
 # generated with awk -F '[(,)]' 'BEGIN{print "VPP_API_ERRNO = {"}/^_/{printf "    %i: %s,\n", $3, $4}END{print "}"}' src/vnet/api_errno.h
 VPP_API_ERRNO = {
     -1:  "Unspecified Error",
@@ -380,16 +383,46 @@ class VATShell(cmd.Cmd):
     def emptyline(self):
         pass
 
-    def __parse_args(self, line):
+    def __parse_args(self, words):
+        # build the arguments map and active path
+        args = cur = collections.OrderedDict()
+        tree = list()
+        queue = list()
+        for i in range(0, len(words), 2):
+            k, v = words[i], words[i+1] if i+1 < len(words) else None
+            if OBJ_OPEN == v:
+                new = collections.OrderedDict()
+                cur[k] = new
+                queue.append(cur)
+                cur = new
+                tree.append(k)
+            elif OBJ_CLOSE == k:
+                tree.pop()
+                cur = queue.pop()
+                # in case we have }}
+                if OBJ_CLOSE == v:
+                    tree.pop()
+                    cur = queue.pop()
+            else:
+                cur[k] = v
+        return args, tree
+
+    def __parse_line(self, line):
+        # parse a line to retrieve service, arguments map and current active path
+        # service is the API (with _ replaced by space)
+        # arguments map is a tree of dict with each arg mapped to its value (including defaults)
+        # active path is the current arg tree for autocomplete
         words = shlex.split(line)
         none = (None, None)
         for i in range(len(words), 0, -1):
             svc, defaults = self.commands.get(' '.join(words[:i]), none)
             if svc: break
-        return (svc, defaults, words[i:])
+        args, tree = self.__parse_args(words[i:])
+        args.update(defaults)
+        return (svc, args, tree)
 
     def default(self, line):
-        svc, defaults, args = self.__parse_args(line)
+        svc, args, tree = self.__parse_line(line)
 
         try:
             f = getattr(vpp.api, svc)
@@ -413,25 +446,25 @@ class VATShell(cmd.Cmd):
             if rv.retval == 0:
                 print('Success')
             else:
-                print('Failure: ' + VPP_API_ERRNO[rv.retval])
+                print('Failure: ' + VPP_API_ERRNO.get(rv.retval, "unknown error") + " (error code %i)" % rv.retval)
         else:
             self.pp.pprint(rv)
 
 
-    # if last word is a valid field, show completion for that field
     def __completedefault(self, text, line, begidx, endidx):
+        # if the line matches commands, let's use that
         commands = self.completenames(line[:endidx], line, 0, endidx)
         if commands:
-            return [c[begidx:] for c in commands]
+            return [c[begidx:] + " " for c in commands]
 
-        svc, defaults, args = self.__parse_args(line)
+        # otherwise it should match a single command
+        svc, args, tree = self.__parse_line(line)
         if not svc:
             return
 
         # creating a dict mapping fields names with fields type
         # we are skipping the 3 header fields
         fields = collections.OrderedDict(zip(vpp.messages[svc].fields[3:], vpp.messages[svc].fieldtypes[3:]))
-        #lastarg = None if not args else args[-1]
         lastarg = None
         if lastarg in fields:
             i = fields.index(lastarg)
@@ -448,13 +481,26 @@ class VATShell(cmd.Cmd):
                             if intf.startswith(text)]
                 return list(interfaces)
         else:
-            params = [param for param in fields if param.startswith(text) and param not in defaults]
+            if tree:
+                # we are in a complex subtype, autocomplete its fields
+                for f in tree:
+                    # go down the types tree...
+                    t = vpp.get_type(fields[f])
+                    fields = collections.OrderedDict(zip(t.fields, t.fieldtypes))
+                params = [f for f in t.fields if f.startswith(text)]
+            else:
+                # otherwise autocomplete on top level fields
+                params = [f for f in fields if f.startswith(text) and f not in args]
             if len(params) == 1:
+                # if a single parameter matches and it is not a basic type, add object open to it
                 t = vpp.get_type(fields[params[0]])
-                if isinstance(t, vpp_papi.vpp_serializer.VPPType) and len(t.msgdef) > 1:
-                    return [params[0] + " " + f[1] for f in t.msgdef]
-            return params
-        return []
+                if isinstance(t, vpp_papi.vpp_serializer.VPPType):
+                    params = [params[0] + " " + OBJ_OPEN + " "]
+            elif tree and not text:
+                # we are in a complex subtype without any additional input, propose object close too
+                params.append(OBJ_CLOSE)
+
+        return params
 
     def completedefault(self, *args, **kwargs):
         try:
